@@ -11,24 +11,17 @@ defmodule MiniDiscord.Client do
 
     case :gen_tcp.connect(String.to_charlist(host), port, options) do
       {:ok, socket} ->
-        IO.puts("Connecté au serveur.")
+        IO.puts("Connecte au serveur.")
         rencontre(socket)
 
-        receiver =
-          Task.async(fn ->
-            receive_loop(socket, host, port)
-          end)
-
-        sender =
-          Task.async(fn ->
-            send_loop(socket)
-          end)
+        receiver = Task.async(fn -> receive_loop(socket, host, port) end)
+        sender = Task.async(fn -> send_loop(socket) end)
 
         Task.await(receiver, :infinity)
         Task.await(sender, :infinity)
 
       {:error, reason} ->
-        IO.puts("Tentative #{attempt} échouée : #{inspect(reason)}")
+        IO.puts("Tentative #{attempt} echouee : #{inspect(reason)}")
         :timer.sleep(2000)
         connect_with_retry(host, port, attempt + 1)
     end
@@ -36,14 +29,16 @@ defmodule MiniDiscord.Client do
 
   defp rencontre(socket) do
     recv_print(socket)
-
-    pseudo = IO.gets("Pseudo : ")
-    :gen_tcp.send(socket, pseudo)
-
     recv_print(socket)
 
-    salon = IO.gets("Salon : ")
-    :gen_tcp.send(socket, salon)
+    pseudo = IO.gets("Pseudo : ") |> String.trim()
+    :gen_tcp.send(socket, pseudo <> "\r\n")
+
+    recv_print(socket)
+    recv_print(socket)
+
+    salon = IO.gets("Salon : ") |> String.trim()
+    :gen_tcp.send(socket, salon <> "\r\n")
 
     recv_print(socket)
   end
@@ -54,15 +49,12 @@ defmodule MiniDiscord.Client do
         case dechiffrer_message(msg) do
           {:ok, msg_dechiffre} ->
             case valider_message(msg_dechiffre) do
-              {:ok, msg_valide} ->
-                IO.write(msg_valide)
-
-              {:error, erreur} ->
-                IO.puts("Message reçu refusé : #{erreur}")
+              {:ok, msg_valide} -> IO.write(msg_valide)
+              {:error, erreur} -> IO.puts("Message refuse : #{erreur}")
             end
 
-          {:error, erreur} ->
-            IO.puts("Erreur de déchiffrement : #{erreur}")
+          {:error, _} ->
+            IO.puts("Erreur de dechiffrement")
         end
 
         receive_loop(socket, host, port)
@@ -83,34 +75,31 @@ defmodule MiniDiscord.Client do
         :gen_tcp.send(socket, msg_chiffre)
 
       {:error, erreur} ->
-        IO.puts("Message non envoyé : #{erreur}")
+        IO.puts("Message non envoye : #{erreur}")
     end
 
     send_loop(socket)
   end
 
   defp recv_print(socket) do
-    case :gen_tcp.recv(socket, 0) do
-      {:ok, msg} ->
-        IO.write(msg)
-
-      {:error, _} ->
-        IO.puts("Déconnecté")
+    case :gen_tcp.recv(socket, 0, 5000) do
+      {:ok, msg} -> IO.write(msg)
+      {:error, _} -> IO.puts("Deconnecte")
     end
   end
 
   defp valider_message(msg) do
-    msg_sans_espaces = String.trim(msg)
+    msg_trim = String.trim(msg)
 
     cond do
-      msg_sans_espaces == "" ->
+      msg_trim == "" ->
         {:error, "Message vide"}
 
-      String.length(msg_sans_espaces) > @max_size ->
+      String.length(msg_trim) > @max_size ->
         {:error, "Message trop long (max 500 chars)"}
 
-      String.contains?(msg_sans_espaces, ["\\", "?", "<", ">"]) ->
-        {:error, "Message contient un caractère interdit"}
+      String.contains?(msg_trim, ["\\", "?", "<", ">"]) ->
+        {:error, "Message contient un caractere interdit"}
 
       true ->
         {:ok, msg}
@@ -119,29 +108,20 @@ defmodule MiniDiscord.Client do
 
   defp chiffrer_message(msg) do
     iv = :crypto.strong_rand_bytes(16)
-
-    msg_chiffre =
-      :crypto.crypto_one_time(:aes_256_ctr, @cle, iv, msg, true)
-
-    paquet = iv <> msg_chiffre
-
-    Base.encode64(paquet) <> "\n"
+    msg_c = :crypto.crypto_one_time(:aes_256_ctr, @cle, iv, msg, true)
+    Base.encode64(iv <> msg_c) <> "\n"
   end
 
   defp dechiffrer_message(msg_recu) do
     msg_recu = String.trim(msg_recu)
 
     case Base.decode64(msg_recu) do
-      {:ok, paquet} ->
-        <<iv::binary-size(16), msg_chiffre::binary>> = paquet
-
-        msg =
-          :crypto.crypto_one_time(:aes_256_ctr, @cle, iv, msg_chiffre, false)
-
+      {:ok, <<iv::binary-size(16), msg_chiffre::binary>>} ->
+        msg = :crypto.crypto_one_time(:aes_256_ctr, @cle, iv, msg_chiffre, false)
         {:ok, msg}
 
-      :error ->
-        {:error, "Message chiffré invalide"}
+      _ ->
+        {:error, "message chiffre invalide"}
     end
   end
 end
